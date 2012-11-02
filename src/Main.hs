@@ -12,12 +12,13 @@ import Database.PostgreSQL.Simple (Only(..))
 import Database.PostgreSQL.Simple.SqlQQ (sql)
 
 import MusicBrainz
+import MusicBrainz.Data.Edit
 import MusicBrainz.Edit
 
 pollEdits :: Chan (Ref Edit) -> MusicBrainz ()
 pollEdits edits = do
   edit <- liftIO (readChan edits)
-  return ()
+  withTransaction $ apply edit
 
 processEdits :: Chan (Ref Edit) -> MusicBrainz ()
 processEdits edits = do
