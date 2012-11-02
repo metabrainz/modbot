@@ -1,0 +1,5 @@
+# The MusicBrainz database to poll for edits
+database = "musicbrainz"
+
+# The user to connect and close edits as
+user = "musicbrainz"
