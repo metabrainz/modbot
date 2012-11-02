@@ -10,26 +10,51 @@ import Control.Monad.IO.Class
 import Data.Configurator
 import Database.PostgreSQL.Simple (Only(..))
 import Database.PostgreSQL.Simple.SqlQQ (sql)
+import System.Log.Logger
 
 import MusicBrainz
 import MusicBrainz.Data.Edit
 import MusicBrainz.Edit
 
-pollEdits :: Chan (Ref Edit) -> MusicBrainz ()
-pollEdits edits = do
-  edit <- liftIO (readChan edits)
-  withTransaction $ apply edit
-
 processEdits :: Chan (Ref Edit) -> MusicBrainz ()
 processEdits edits = do
+  edit <- liftIO (readChan edits)
+  liftIO $ debugM "ModBot." ("Attempting to close " ++ show edit)
+  withTransaction $ apply edit
+
+pollEdits :: Chan (Ref Edit) -> MusicBrainz ()
+pollEdits edits = do
+  liftIO $ debugM "ModBot.Poll" "Polling for edits to close"
   ready <- map fromOnly <$> findOpenEdits
   liftIO $ forM_ ready $ \editId -> writeChan edits editId
   where
-    findOpenEdits = query [sql| SELECT * FROM edit WHERE status = ? |]
-      (Only Open)
+    findOpenEdits = query [sql|
+      SELECT edit_id
+      FROM (
+        SELECT
+          edit_id,
+          count(editor_id) AS editor_count,
+          sum(vote) / (count(editor_id)::float) AS score
+        FROM (
+          SELECT
+            edit_id, vote, editor_id,
+            row_number() OVER (PARTITION BY editor_id ORDER BY vote_time DESC)
+          FROM edit
+          JOIN vote USING (edit_id)
+          WHERE status = ?
+        ) a
+        WHERE row_number = 1
+        GROUP BY edit_id
+      ) b
+      WHERE
+        (editor_count >= 3 AND score >= (1.0/3.0)) OR
+        (editor_count < 3 AND score = 1)
+    |] (Only Open)
 
 main :: IO ()
 main = do
+  updateGlobalLogger rootLoggerName (setLevel DEBUG)
+
   (config, _) <- autoReload autoConfig [Required "modbot.conf"]
 
   connectInfo <- parseConnectInfo config
@@ -38,10 +63,10 @@ main = do
   edits <- newChan
 
   void $ do
-    forkIO $ runMb connectInfo (pollEdits edits)
+    forkIO $ runMb connectInfo (forever $ processEdits edits)
 
   runMb connectInfo $ forever $ do
-    processEdits edits
+    pollEdits edits
     liftIO $ threadDelay (frequency * 1000000)
 
   where
